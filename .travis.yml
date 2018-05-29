@@ -1,0 +1,33 @@
+env:
+  global:
+  - WEB_IMAGE_REPO=siamaksade/multicloud-demo-web
+  - APB_IMAGE_REPO=siamaksade/mysql-digital-ocean-apb
+
+cache:
+  directories:
+  - $HOME/.m2
+
+language: java
+
+jdk:
+  - oraclejdk8
+
+before_install:
+  - docker login -u $DOCKER_USER -p $DOCKER_PASS
+  - cp .travis.settings.xml $HOME/.m2/settings.xml
+  - curl -sL -o $HOME/s2i.tar.gz https://github.com/openshift/source-to-image/releases/download/v1.1.9/source-to-image-v1.1.9-db2b4645-linux-amd64.tar.gz
+  - pushd $HOME/bin && tar xvfz $HOME/s2i.tar.gz && popd
+
+install:
+  - pip install ansible
+  - ansible-galaxy install -r requirements.yml
+  - ansible-playbook init_dev.yml --syntax-check
+  - ansible-playbook init_prod.yml --syntax-check
+
+after_success:
+  - mvn -f catalog-spring-boot package
+  - export TAG=`if [ "$TRAVIS_BRANCH" == "master" ]; then echo "latest"; else echo $TRAVIS_BRANCH ; fi`
+  - ${HOME}/bin/s2i build ./web-nodejs centos/nodejs-8-centos7 $WEB_IMAGE_REPO:$TAG
+  - docker push $WEB_IMAGE_REPO:$TAG
+  - cd mysql-digital-ocean-apb && docker build -t $APB_IMAGE_REPO:$TAG .
+  - docker push $APB_IMAGE_REPO:$TAG

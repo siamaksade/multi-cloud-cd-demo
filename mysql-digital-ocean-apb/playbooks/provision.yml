@@ -1,0 +1,33 @@
+---
+- name: provision droplet for mysql
+  hosts: localhost
+  gather_facts: false
+  connection: local
+  roles:
+  - role: ansible.kubernetes-modules
+    install_python_requirements: no
+  - role: ansibleplaybookbundle.asb-modules
+    playbook_debug: false
+  - role: provision_droplet
+
+- name: provision and configure mysql
+  hosts: mysql
+  user: root
+  tasks:
+  roles:
+  - role: ansible.kubernetes-modules
+    install_python_requirements: no
+  - role: ansibleplaybookbundle.asb-modules
+    playbook_debug: false
+  - role: provision_mysql
+
+- name: create k8s objects
+  hosts: localhost
+  gather_facts: true
+  connection: local
+  roles:
+  - role: ansible.kubernetes-modules
+    install_python_requirements: no
+  - role: ansibleplaybookbundle.asb-modules
+    playbook_debug: false
+  - role: configure_endpoints

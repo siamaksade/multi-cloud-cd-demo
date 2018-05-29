@@ -1,0 +1,239 @@
+---
+- name: Deploy Demo
+  hosts: localhost
+  gather_facts: false
+  run_once: true
+  vars:
+    lab_infra_project: lab-infra
+    user_gogs_admin: gogs
+    user_gogs_user: developer
+    user_gogs_password: openshift
+    labs_github_account: siamaksade
+    labs_github_ref: master
+    openshift_cli: oc
+    project_admin: developer
+    clean_init: false
+    digitalocean_api_key: 
+  tasks:
+    - include_role:
+        name: openshift_common_facts
+      tags: always
+
+    - name: check to be logged in as cluster admin
+      shell: "{{ openshift_cli }} get project default"
+      changed_when: false
+
+    # configure ansible broker
+    - name: create digital ocean secret
+      shell: |
+        {{ openshift_cli }} delete secret digital-ocean-api-key -n openshift-ansible-service-broker
+        {{ openshift_cli }} create secret generic digital-ocean-api-key --from-literal=api_key={{ digitalocean_api_key }} -n openshift-ansible-service-broker
+      ignore_errors: true
+      tags: broker
+
+    - name: update ansible broker config
+      shell: |
+        {{ openshift_cli }} delete configmap broker-config -n openshift-ansible-service-broker
+        {{ openshift_cli }} create configmap broker-config --from-file=broker-config=files/broker-config.yml -n openshift-ansible-service-broker
+      tags: broker
+
+    - name: restart ansible broker
+      shell: "{{ openshift_cli }} rollout latest dc/asb -n openshift-ansible-service-broker" 
+      tags: broker
+
+    # create lab-infra project
+    - name: clean up lab environment
+      shell: "{{ openshift_cli }} delete project {{ lab_infra_project }} dev stage cicd"
+      when: clean_init|bool
+      ignore_errors: true
+      tags: always
+
+    - name: wait for {{ lab_infra_project }} project to get removed
+      shell: "{{ openshift_cli }} get project {{ lab_infra_project }}"
+      ignore_errors: true
+      register: result
+      until: result|failed
+      retries: 30
+      delay: 30
+
+    - name: wait for dev project to get removed
+      shell: "{{ openshift_cli }} get project dev"
+      ignore_errors: true
+      register: result
+      until: result|failed
+      retries: 30
+      delay: 30
+
+    - name: wait for stage project to get removed
+      shell: "{{ openshift_cli }} get project stage"
+      ignore_errors: true
+      register: result
+      until: result|failed
+      retries: 30
+      delay: 30
+
+    - name: wait for cicd project to get removed
+      shell: "{{ openshift_cli }} get project cicd"
+      ignore_errors: true
+      register: result
+      until: result|failed
+      retries: 30
+      delay: 30
+
+    - name: create lab infra project
+      shell: "{{ openshift_cli }} new-project {{ lab_infra_project }} --display-name='Lab Infra'"
+      ignore_errors: true
+      tags: always
+
+    - name: make lab infra project global
+      shell: "{{ openshift_cli }} adm pod-network make-projects-global {{ lab_infra_project }}"
+      ignore_errors: true
+      tags: always
+
+    # deploy nexus
+    - import_role:
+        name: openshift_sonatype_nexus
+      vars:
+        project_name: "{{ lab_infra_project }}"
+        nexus_image_version: 3.12.0
+        nexus_max_memory: 6Gi
+      tags: nexus
+
+    # deploy gogs
+    - set_fact:
+        gogs_hostname: gogs-{{ lab_infra_project }}.{{ apps_hostname_suffix }}
+      tags: always
+
+    - import_role:
+        name: openshift_gogs
+      vars:
+        project_name: "{{ lab_infra_project }}"
+        gogs_route: "{{ gogs_hostname }}"
+        gogs_image_version: 0.11.34
+        gogs_admin_user: "{{ user_gogs_admin }}"
+        gogs_admin_password: "{{ user_gogs_password }}"
+        gogs_user: "{{ user_gogs_user }}"
+        gogs_password: "{{ user_gogs_password }}"
+        clean_deploy: true
+      tags: gogs
+
+    # create catalog git repo
+    - name: create catalog git repository
+      uri:
+        url: http://{{ gogs_hostname }}/api/v1/user/repos
+        method: POST
+        body: '{"name": "catalog-spring-boot", "private": false}'
+        body_format: json
+        user: "{{ user_gogs_user }}"
+        password: "{{ user_gogs_password }}"
+        status_code: 200,201
+        force_basic_auth: true
+      tags: gogs
+
+    - name: create temporary git directory
+      tempfile:
+        state: directory
+        prefix: projects-git
+      register: git_dir
+      tags: gogs
+
+    - name: unarchive projects source archive
+      unarchive:
+        remote_src: yes
+        src: "https://github.com/{{ labs_github_account }}/devops-oab-labs/archive/{{ labs_github_ref }}.tar.gz"
+        dest: "{{ git_dir.path }}"
+      tags: gogs
+
+    - name: push catalog to git repository in gogs
+      shell: |
+        git init
+        git remote add origin http://{{ user_gogs_user }}:{{ user_gogs_password }}@{{ gogs_hostname }}/{{ user_gogs_user }}/catalog-spring-boot.git
+        git add . --all
+        git config user.email "rhdeveloper@redhat.com"
+        git config user.name "rh-developer"
+        git commit -m "Initial add"
+        git push origin master
+      args:
+        chdir: "{{ git_dir.path }}/devops-oab-labs-{{ labs_github_ref }}/catalog-spring-boot"
+      tags: gogs
+
+    - name: create cd-infra git repository
+      uri:
+        url: http://{{ gogs_hostname }}/api/v1/user/repos
+        method: POST
+        body: '{"name": "cd-infra", "private": false}'
+        body_format: json
+        user: "{{ user_gogs_user }}"
+        password: "{{ user_gogs_password }}"
+        status_code: 200,201
+        force_basic_auth: true
+      tags: gogs
+
+    # deploy guides
+    - import_role:
+        name: openshift_workshopper
+      vars:
+        project_name: "{{ lab_infra_project }}"
+        workshopper_content_url_prefix: "https://raw.githubusercontent.com/openshift-labs/devops-oab-guides/master"
+        workshopper_workshop_urls: "https://raw.githubusercontent.com/openshift-labs/devops-oab-guides/master/_summit-devops-lab.yml"
+        workshopper_env_vars:
+          OPENSHIFT_URL: "https://{{ apps_hostname_suffix | replace('devapps', 'masterdev') }}:8443"
+          OPENSHIFT_REGISTRY: "docker-registry-default.{{ apps_hostname_suffix }}"
+          PROD_URL: "https://{{ apps_hostname_suffix | replace('devapps', 'masterprod') }}:8443"
+          PROD_REGISTRY: "docker-registry-default.{{ apps_hostname_suffix | replace('devapps', 'apps') }}"
+          OPENSHIFT_DOCS_BASE: "https://docs.openshift.com/container-platform/3.9"
+          NEXUS_EXTERNAL_URL: "http://nexus-lab-infra.{{ apps_hostname_suffix }}"
+          GIT_HOSTNAME: "gogs-lab-infra.{{ apps_hostname_suffix }}"
+          DIGITALOCEAN_DASHBOARD: "http://digitalocean.openshiftworkshop.com"
+          WORKSTATION_HOSTNAME: "{{ apps_hostname_suffix | replace('devapps', 'workstation') }}"
+      tags: guides
+
+    # create projects
+    - name: create cicd, dev and stage projects
+      shell: |
+        {{ openshift_cli }} adm new-project dev   --admin="{{ project_admin }}" --display-name="CoolStore DEV"
+        {{ openshift_cli }} adm new-project stage --admin="{{ project_admin }}" --display-name="CoolStore STAGE"
+        {{ openshift_cli }} adm new-project cicd  --admin="{{ project_admin }}" --display-name="CI/CD"
+        
+        {{ openshift_cli }} adm policy add-role-to-group admin                system:serviceaccounts:cicd        -n dev
+        {{ openshift_cli }} adm policy add-role-to-group admin                system:serviceaccounts:cicd        -n stage
+        {{ openshift_cli }} adm policy add-role-to-group system:image-puller  system:serviceaccounts:dev         -n cicd
+        {{ openshift_cli }} adm policy add-role-to-group system:image-puller  system:serviceaccounts:stage       -n cicd
+        {{ openshift_cli }} adm policy add-role-to-user  system:image-builder system:serviceaccount:dev:builder  -n cicd
+      ignore_errors: true
+      tags: user_projects
+
+    # create web imagestream
+    - name: import web ui images from docker hub
+      shell: |
+        {{ openshift_cli }} import-image web-ui --from="docker.io/siamaksade/rhsummit18-devops-web" --all --confirm -n cicd
+        {{ openshift_cli }} tag cicd/web-ui:latest cicd/web-ui:1.0
+
+    # configure jenkins slave
+    - name: create jenkins slave configmap 
+      shell: "{{ openshift_cli }} apply -f https://raw.githubusercontent.com/openshift-labs/devops-oab-labs/master/openshift/jenkins-slave-skopeo.yml -n cicd"
+      ignore_errors: true
+      tags: user_projects
+
+    # populate nexus
+    - name: populate nexus
+      shell: "{{ openshift_cli }} new-build redhat-openjdk18-openshift:1.2~http://{{ gogs_hostname }}/{{ user_gogs_user }}/catalog-spring-boot.git -n {{ lab_infra_project }} -e MAVEN_MIRROR_URL=http://nexus.{{ lab_infra_project }}.svc:8081/repository/maven-all-public"
+      ignore_errors: true
+      tags: populate-nexus
+
+    # validate cluster
+    - name: check openjdk image stream installed
+      shell: "{{ openshift_cli }} get is redhat-openjdk18-openshift -n openshift"
+      register: jdk_imagestream_result
+      ignore_errors: true
+      tags: validate
+
+    - name: display instructions to install openjdk image stream
+      debug:
+        msg:
+          - '### WARNING ###'
+          - 'OpenJDK image stream is not installed. Run the following as cluster admin:'
+          - '{{ openshift_cli }} create -n openshift -f https://raw.githubusercontent.com/openshift/openshift-ansible/release-3.9/roles/openshift_examples/files/examples/v3.9/xpaas-streams/jboss-image-streams.json'
+      when: jdk_imagestream_result|failed   
+      tags: validate
+

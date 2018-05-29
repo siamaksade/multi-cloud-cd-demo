@@ -1,0 +1,4 @@
+com/redhat/cloudnative/catalog/CatalogApplication.class
+com/redhat/cloudnative/catalog/ProductRepository.class
+com/redhat/cloudnative/catalog/Product.class
+com/redhat/cloudnative/catalog/CatalogController.class
