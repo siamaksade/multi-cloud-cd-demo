@@ -1,7 +1,7 @@
 
 
 ```
-oc new-app nginx:1.12~https://github.com/siamaksade/multi-cloud-cd-demo.git --name=assets --context-dir=web-console-assets -n openshift-web-console
+oc new-app nginx:1.12~https://github.com/siamaksade/multi-cloud-cd-demo.git#v3.9 --name=assets --context-dir=web-console-assets -n openshift-web-console
 ```
 
 OR
