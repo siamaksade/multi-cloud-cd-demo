@@ -4,12 +4,12 @@
   gather_facts: false
   run_once: true
   vars:
-    lab_infra_project: lab-infra
+    infra_project: demo-infra
     user_gogs_admin: gogs
     user_gogs_user: developer
     user_gogs_password: openshift
-    labs_github_account: siamaksade
-    labs_github_ref: master
+    github_account: siamaksade
+    github_ref: v3.9
     openshift_cli: oc
     project_admin: developer
     clean_init: false
@@ -23,6 +23,15 @@
       shell: "{{ openshift_cli }} get project default"
       changed_when: false
 
+    # get openshift version
+    - name: get openshift version
+      shell: "{{ openshift_cli }} version | grep '^openshift.*$' | sed 's/openshift //g'"
+      register: openshift_version_result 
+
+    - set_fact:
+        openshift_verson_long: "{{ openshift_version_result.stdout }}"
+        openshift_verson_short: "{{ openshift_version_result.stdout | regex_replace('^(v\\d+\\.\\d+)\\..*$', '\\1') }}"
+
     # configure ansible broker
     - name: create digital ocean secret
       shell: |
@@ -31,24 +40,45 @@
       ignore_errors: true
       tags: broker
 
+    - name: create broker configmap
+      template:
+        src: files/broker-config.yml.j2
+        dest: "/tmp/broker-config.yml"
+        force: true
+
     - name: update ansible broker config
       shell: |
         {{ openshift_cli }} delete configmap broker-config -n openshift-ansible-service-broker
-        {{ openshift_cli }} create configmap broker-config --from-file=broker-config=files/broker-config.yml -n openshift-ansible-service-broker
+        {{ openshift_cli }} create configmap broker-config --from-file=broker-config=/tmp/broker-config.yml -n openshift-ansible-service-broker
       tags: broker
 
     - name: restart ansible broker
       shell: "{{ openshift_cli }} rollout latest dc/asb -n openshift-ansible-service-broker" 
       tags: broker
 
+    # configure console logo
+    - name: check if logo configured
+      shell: "{{ openshift_cli }} get bc assets -n openshift-web-console"
+      ignore_errors: true
+      result: logo_result
+      tags: logo
+
+    - name: configure dev logo
+      shell: |
+        {{ openshift_cli }} new-app nginx:1.12~https://github.com/siamaksade/multi-cloud-cd-demo.git#v3.9 --name=assets --context-dir=web-console-assets -n openshift-web-console
+        {{ openshift_cli }} oc create route edge assets --service=assets openshift-web-console
+      ignore_errors: true
+      when: logo_result|failed
+      tags: logo
+
     # create lab-infra project
     - name: create lab infra project
-      shell: "{{ openshift_cli }} new-project {{ lab_infra_project }} --display-name='Lab Infra'"
+      shell: "{{ openshift_cli }} new-project {{ infra_project }}"
       ignore_errors: true
       tags: always
 
     - name: make lab infra project global
-      shell: "{{ openshift_cli }} adm pod-network make-projects-global {{ lab_infra_project }}"
+      shell: "{{ openshift_cli }} adm pod-network make-projects-global {{ infra_project }}"
       ignore_errors: true
       tags: always
 
@@ -56,7 +86,7 @@
     - import_role:
         name: openshift_sonatype_nexus
       vars:
-        project_name: "{{ lab_infra_project }}"
+        project_name: "{{ infra_project }}"
         nexus_image_version: 3.12.0
         nexus_max_memory: 6Gi
       tags: nexus
@@ -65,24 +95,20 @@
     - import_role:
         name: openshift_eclipse_che
       vars:
-        project_name: "{{ lab_infra_project }}"
+        project_name: "{{ infra_project }}"
         che_version: "6.5.1"
-        multi_user: true
         route_suffix: "{{ apps_hostname_suffix }}"
-        keycloak_openshift_user: admin
-        keycloak_admin_pwd: admin
-        install_java_oc_stack: true
       tags: eclipse-che
 
     # deploy gogs
     - set_fact:
-        gogs_hostname: gogs-{{ lab_infra_project }}.{{ apps_hostname_suffix }}
+        gogs_hostname: gogs-{{ infra_project }}.{{ apps_hostname_suffix }}
       tags: always
 
     - import_role:
         name: openshift_gogs
       vars:
-        project_name: "{{ lab_infra_project }}"
+        project_name: "{{ infra_project }}"
         gogs_route: "{{ gogs_hostname }}"
         gogs_image_version: 0.11.34
         gogs_admin_user: "{{ user_gogs_admin }}"
@@ -115,7 +141,7 @@
     - name: unarchive projects source archive
       unarchive:
         remote_src: yes
-        src: "https://github.com/{{ labs_github_account }}/devops-oab-labs/archive/{{ labs_github_ref }}.tar.gz"
+        src: "https://github.com/{{ github_account }}/multi-cloud-cd-demo/archive/{{ github_ref }}.tar.gz"
         dest: "{{ git_dir.path }}"
       tags: gogs
 
@@ -129,7 +155,7 @@
         git commit -m "Initial add"
         git push origin master
       args:
-        chdir: "{{ git_dir.path }}/devops-oab-labs-{{ labs_github_ref }}/catalog-spring-boot"
+        chdir: "{{ git_dir.path }}/github_account-{{ github_ref }}/catalog-spring-boot"
       tags: gogs
 
     - name: create cd-infra git repository
@@ -143,25 +169,6 @@
         status_code: 200,201
         force_basic_auth: true
       tags: gogs
-
-    # deploy guides
-    - import_role:
-        name: openshift_workshopper
-      vars:
-        project_name: "{{ lab_infra_project }}"
-        workshopper_content_url_prefix: "https://raw.githubusercontent.com/openshift-labs/devops-oab-guides/master"
-        workshopper_workshop_urls: "https://raw.githubusercontent.com/openshift-labs/devops-oab-guides/master/_summit-devops-lab.yml"
-        workshopper_env_vars:
-          OPENSHIFT_URL: "https://{{ apps_hostname_suffix | replace('devapps', 'masterdev') }}:8443"
-          OPENSHIFT_REGISTRY: "docker-registry-default.{{ apps_hostname_suffix }}"
-          PROD_URL: "https://{{ apps_hostname_suffix | replace('devapps', 'masterprod') }}:8443"
-          PROD_REGISTRY: "docker-registry-default.{{ apps_hostname_suffix | replace('devapps', 'apps') }}"
-          OPENSHIFT_DOCS_BASE: "https://docs.openshift.com/container-platform/3.9"
-          NEXUS_EXTERNAL_URL: "http://nexus-lab-infra.{{ apps_hostname_suffix }}"
-          GIT_HOSTNAME: "gogs-lab-infra.{{ apps_hostname_suffix }}"
-          DIGITALOCEAN_DASHBOARD: "http://digitalocean.openshiftworkshop.com"
-          WORKSTATION_HOSTNAME: "{{ apps_hostname_suffix | replace('devapps', 'workstation') }}"
-      tags: guides
 
     # create projects
     - name: create cicd, dev and stage projects
@@ -182,17 +189,18 @@
     - name: import web ui images from docker hub
       shell: |
         {{ openshift_cli }} import-image web-ui --from="docker.io/siamaksade/multicloud-demo-web" --all --confirm -n cicd
-        {{ openshift_cli }} tag cicd/web-ui:latest cicd/web-ui:1.0
+        {{ openshift_cli }} tag cicd/web-ui:{{ openshift_verson_short }} cicd/web-ui:1.0
+        {{ openshift_cli }} tag cicd/web-ui:{{ openshift_verson_short }} cicd/web-ui:latest
 
     # configure jenkins slave
     - name: create jenkins slave configmap 
-      shell: "{{ openshift_cli }} apply -f https://raw.githubusercontent.com/openshift-labs/devops-oab-labs/master/openshift/jenkins-slave-skopeo.yml -n cicd"
+      shell: "{{ openshift_cli }} apply -f files/jenkins-slave-skopeo.yml -n cicd"
       ignore_errors: true
       tags: user_projects
 
     # populate nexus
     - name: populate nexus
-      shell: "{{ openshift_cli }} new-build redhat-openjdk18-openshift:1.2~http://{{ gogs_hostname }}/{{ user_gogs_user }}/catalog-spring-boot.git -n {{ lab_infra_project }} -e MAVEN_MIRROR_URL=http://nexus.{{ lab_infra_project }}.svc:8081/repository/maven-all-public"
+      shell: "{{ openshift_cli }} new-build redhat-openjdk18-openshift:1.2~http://{{ gogs_hostname }}/{{ user_gogs_user }}/catalog-spring-boot.git -n {{ infra_project }} -e MAVEN_MIRROR_URL=http://nexus.{{ infra_project }}.svc:8081/repository/maven-all-public"
       ignore_errors: true
       tags: populate-nexus
 
