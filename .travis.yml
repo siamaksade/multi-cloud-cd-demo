@@ -20,12 +20,6 @@ before_install:
   - curl -sL -o $HOME/s2i.tar.gz https://github.com/openshift/source-to-image/releases/download/v1.1.9/source-to-image-v1.1.9-db2b4645-linux-amd64.tar.gz
   - pushd $HOME/bin && tar xvfz $HOME/s2i.tar.gz && popd
 
-install:
-  - pip install ansible
-  - ansible-galaxy install -r requirements.yml
-  - ansible-playbook init_dev.yml --syntax-check
-  - ansible-playbook init_prod.yml --syntax-check
-
 after_success:
   - mvn -f catalog-spring-boot package
   - export TAG=`if [ "$TRAVIS_BRANCH" == "master" ]; then echo "latest"; else echo $TRAVIS_BRANCH ; fi`

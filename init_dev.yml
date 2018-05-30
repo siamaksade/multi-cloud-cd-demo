@@ -99,6 +99,18 @@
         nexus_max_memory: 6Gi
       tags: nexus
 
+    # deploy che
+    - import_role:
+        name: openshift_eclipse_che
+      vars:
+        project_name: "{{ lab_infra_project }}"
+        che_version: "6.5.1"
+        multi_user: true
+        route_suffix: "{{ apps_hostname_suffix }}"
+        keycloak_openshift_user: admin
+        keycloak_admin_pwd: admin
+        install_java_oc_stack: true
+
     # deploy gogs
     - set_fact:
         gogs_hostname: gogs-{{ lab_infra_project }}.{{ apps_hostname_suffix }}
