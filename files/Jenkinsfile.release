@@ -1,0 +1,76 @@
+def releaseTag
+def template = 'https://raw.githubusercontent.com/siamaksade/multi-cloud-cd-demo/v3.9/files/coolstore-template.yaml'
+
+pipeline {
+  agent {
+      label 'maven'
+  }
+  stages {
+    stage('Prepare') {
+      steps {
+        git url: 'http://gogs-demo-infra.apps.gartnerdev.openshiftworkshop.com/developer/catalog-spring-boot.git'
+        sh "git config --local user.email 'jenkins@cicd.com'"
+        sh "git config --local user.name 'jenkins'"
+        
+        script {
+          releaseTag = readMavenPom().getVersion().replace("-SNAPSHOT", "")
+        }
+      }
+    }
+    stage('Release Code') {
+      environment {
+        SCM_GIT_URL = sh(returnStdout: true, script: 'git config remote.origin.url').trim()
+      }
+      steps {
+        script {
+          openshift.withCluster() {
+            withCredentials([usernamePassword(credentialsId: "${openshift.project()}-gogs-credentials", usernameVariable: "GOGS_USERNAME", passwordVariable: "GOGS_PASSWORD")]) {
+              sh "mvn --batch-mode release:clean release:prepare release:perform -s .settings.xml"
+            }
+          }
+        }
+      }
+    }
+    stage('Release Image') {
+      steps {
+        script {
+          openshift.withCluster() {
+            echo "Releasing catalog image version ${releaseTag}"
+            openshift.tag("${openshift.project()}/catalog:latest", "${openshift.project()}/catalog:${releaseTag}")
+          }
+        }
+      }
+    }    
+    stage('Tear-down STAGE') {
+      steps {
+        script {
+          openshift.withCluster() {
+            openshift.withProject(env.STAGE_PROJECT) {
+              openshift.delete(openshift.process("-f", template))
+            }
+          }
+        }
+      }
+    }    
+    stage('Deploy STAGE') {
+      steps {
+        script {
+          openshift.withCluster() {
+            def imageNamespace = openshift.project()
+            openshift.withProject(env.STAGE_PROJECT) {
+              openshift.apply(
+                openshift.process("-f", template, "-p", "CATALOG_IMAGE_VERSION=${releaseTag}", "-p", "IMAGE_NAMESPACE=${imageNamespace}")
+              )
+
+              openshift.selector("secret").withEach {
+                if (it.name().contains("mysql-digital-ocean-apb") && it.name().contains("credentials")) {
+                  openshift.set("env", "--from=${it.name()}", "--prefix=APB_", "dc/catalog")
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}

@@ -135,7 +135,7 @@ objects:
     clusterServiceClassExternalName: dh-mysql-digital-ocean-apb
     clusterServicePlanExternalName: 512mb
     parameters:
-      service_name: catalogdb${DB_SERVICE_NAME}
+      service_name: ${DB_SERVICE_NAME}
       region: ${DB_REGION}
       mysql_database: catalog
       mysql_user: ${DB_USERNAME}
