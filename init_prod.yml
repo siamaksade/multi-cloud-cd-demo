@@ -6,6 +6,8 @@
   vars:
     openshift_cli: oc
     digitalocean_api_key: 
+    github_account: siamaksade
+    github_ref: v3.9
   tasks:
     - include_role:
         name: openshift_common_facts
@@ -17,6 +19,15 @@
       shell: "{{ openshift_cli }} get project default"
       changed_when: false
 
+    # get openshift version
+    - name: get openshift version
+      shell: "{{ openshift_cli }} version | grep '^openshift.*$' | sed 's/openshift //g'"
+      register: openshift_version_result 
+
+    - set_fact:
+        openshift_verson_long: "{{ openshift_version_result.stdout }}"
+        openshift_verson_short: "{{ openshift_version_result.stdout | regex_replace('^(v\\d+\\.\\d+)\\..*$', '\\1') }}"
+
     # configure ansible broker
     - name: create digital ocean secret
       shell: |
@@ -25,14 +36,33 @@
       ignore_errors: true
       tags: broker
 
+    - name: create broker configmap
+      template:
+        src: files/broker-config.yml.j2
+        dest: "/tmp/broker-config.yml"
+        force: true
+
     - name: update ansible broker config
       shell: |
         {{ openshift_cli }} delete configmap broker-config -n openshift-ansible-service-broker
-        {{ openshift_cli }} create configmap broker-config --from-file=broker-config=files/broker-config-prod.yml -n openshift-ansible-service-broker
+        {{ openshift_cli }} create configmap broker-config --from-file=broker-config=/tmp/broker-config.yml -n openshift-ansible-service-broker
       tags: broker
 
     - name: restart ansible broker
-      shell: |
-        {{ openshift_cli }} rollout latest dc/asb -n openshift-ansible-service-broker
-        {{ openshift_cli }} delete pod -l webconsole=true -n openshift-web-console
+      shell: "{{ openshift_cli }} rollout latest dc/asb -n openshift-ansible-service-broker" 
       tags: broker
+
+    # configure console logo
+    - name: check if logo configured
+      shell: "{{ openshift_cli }} get bc assets -n openshift-web-console"
+      ignore_errors: true
+      result: logo_result
+      tags: logo
+
+    - name: configure dev logo
+      shell: |
+        {{ openshift_cli }} new-app nginx:1.12~https://github.com/{{ github_account }}/multi-cloud-cd-demo.git#{{ github_ref }} --name=assets --context-dir=web-console-assets -n openshift-web-console
+        {{ openshift_cli }} oc create route edge assets --service=assets openshift-web-console
+      ignore_errors: true
+      when: logo_result|failed
+      tags: logo
