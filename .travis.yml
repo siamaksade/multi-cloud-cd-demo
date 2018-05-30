@@ -7,6 +7,8 @@ cache:
   directories:
   - $HOME/.m2
 
+dist: trusty
+sudo: required
 language: java
 
 jdk:
