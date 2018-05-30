@@ -42,44 +42,6 @@
       tags: broker
 
     # create lab-infra project
-    - name: clean up lab environment
-      shell: "{{ openshift_cli }} delete project {{ lab_infra_project }} dev stage cicd"
-      when: clean_init|bool
-      ignore_errors: true
-      tags: always
-
-    - name: wait for {{ lab_infra_project }} project to get removed
-      shell: "{{ openshift_cli }} get project {{ lab_infra_project }}"
-      ignore_errors: true
-      register: result
-      until: result|failed
-      retries: 30
-      delay: 30
-
-    - name: wait for dev project to get removed
-      shell: "{{ openshift_cli }} get project dev"
-      ignore_errors: true
-      register: result
-      until: result|failed
-      retries: 30
-      delay: 30
-
-    - name: wait for stage project to get removed
-      shell: "{{ openshift_cli }} get project stage"
-      ignore_errors: true
-      register: result
-      until: result|failed
-      retries: 30
-      delay: 30
-
-    - name: wait for cicd project to get removed
-      shell: "{{ openshift_cli }} get project cicd"
-      ignore_errors: true
-      register: result
-      until: result|failed
-      retries: 30
-      delay: 30
-
     - name: create lab infra project
       shell: "{{ openshift_cli }} new-project {{ lab_infra_project }} --display-name='Lab Infra'"
       ignore_errors: true
@@ -110,6 +72,7 @@
         keycloak_openshift_user: admin
         keycloak_admin_pwd: admin
         install_java_oc_stack: true
+      tags: eclipse-che
 
     # deploy gogs
     - set_fact:
@@ -218,7 +181,7 @@
     # create web imagestream
     - name: import web ui images from docker hub
       shell: |
-        {{ openshift_cli }} import-image web-ui --from="docker.io/siamaksade/rhsummit18-devops-web" --all --confirm -n cicd
+        {{ openshift_cli }} import-image web-ui --from="docker.io/siamaksade/multicloud-demo-web" --all --confirm -n cicd
         {{ openshift_cli }} tag cicd/web-ui:latest cicd/web-ui:1.0
 
     # configure jenkins slave
